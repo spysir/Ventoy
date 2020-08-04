@@ -23,11 +23,21 @@ if is_ventoy_hook_finished; then
     exit 0
 fi
 
-vtlog "##### INOTIFYD: $2/$3 is created ..."
-
 VTPATH_OLD=$PATH; PATH=$BUSYBOX_PATH:$VTOY_PATH/tool:$PATH
 
 if is_inotify_ventoy_part $3; then
+
+    vtlog "##### INOTIFYD: $2/$3 is created (YES) ..."
+
+    vtGenRulFile='/etc/udev/rules.d/99-live-squash.rules'
+    if [ -e $vtGenRulFile ] && $GREP -q dmsquash $vtGenRulFile; then
+        vtScript=$($GREP -m1 'RUN.=' $vtGenRulFile | $AWK -F'RUN.=' '{print $2}' | $SED 's/"\(.*\)".*/\1/')
+        vtlog "vtScript=$vtScript"
+        $vtScript
+    else
+        vtlog "$vtGenRulFile not exist..."
+    fi
+
     vtlog "find ventoy partition ..."
     $BUSYBOX_PATH/sh $VTOY_PATH/hook/default/udev_disk_hook.sh $3 noreplace
     
@@ -41,7 +51,14 @@ if is_inotify_ventoy_part $3; then
         ventoy_swap_device /dev/dm-0 /dev/$vtDM
     fi
     
+    if [ -e /sbin/anaconda-diskroot ]; then
+        vtlog "set anaconda-diskroot ..."
+        /sbin/anaconda-diskroot /dev/dm-0    
+    fi
+    
     set_ventoy_hook_finish
+else
+    vtlog "##### INOTIFYD: $2/$3 is created (NO) ..."
 fi
 
 PATH=$VTPATH_OLD

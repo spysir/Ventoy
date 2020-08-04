@@ -19,16 +19,33 @@
 
 . $VTOY_PATH/hook/ventoy-os-lib.sh
 
-# some archlinux initramfs doesn't contain device-mapper udev rules file
-ARCH_UDEV_DIR=$(ventoy_get_udev_conf_dir)
-if [ -s "$ARCH_UDEV_DIR/13-dm-disk.rules" ]; then
-    echo 'dm-disk rule exist' >> $VTLOG
+if $GREP -q '^"$mount_handler"' /init; then
+    echo 'use mount_handler ...' >> $VTLOG
+    $SED "/^\"\$mount_handler\"/i\ $BUSYBOX_PATH/sh $VTOY_PATH/hook/arch/ventoy-disk.sh \"\$archisodevice\"" -i /init
+    
+    if [ -f /hooks/archiso ]; then
+        $SED  '/while ! poll_device "${dev}"/a\    if /ventoy/busybox/sh /ventoy/hook/arch/ventoy-timeout.sh ${dev}; then break; fi'   -i /hooks/archiso
+    fi
+elif $GREP -q '^KEEP_SEARCHING' /init; then
+    echo 'KEEP_SEARCHING found ...' >> $VTLOG
+    $SED "/^KEEP_SEARCHING/i\ $BUSYBOX_PATH/sh $VTOY_PATH/hook/arch/ovios-disk.sh " -i /init
+    
+    $BUSYBOX_PATH/mkdir -p /dev    
+    $BUSYBOX_PATH/mkdir -p /sys
+    $BUSYBOX_PATH/mount -t sysfs sys /sys
+    
 else
-    echo 'Copy dm-disk rule file' >> $VTLOG
-    $CAT $VTOY_PATH/hook/default/13-dm-disk.rules > "$ARCH_UDEV_DIR/13-dm-disk.rules"
+    # some archlinux initramfs doesn't contain device-mapper udev rules file
+    ARCH_UDEV_DIR=$(ventoy_get_udev_conf_dir)
+    if [ -s "$ARCH_UDEV_DIR/13-dm-disk.rules" ]; then
+        echo 'dm-disk rule exist' >> $VTLOG
+    else
+        echo 'Copy dm-disk rule file' >> $VTLOG
+        $CAT $VTOY_PATH/hook/default/13-dm-disk.rules > "$ARCH_UDEV_DIR/13-dm-disk.rules"
+    fi
+
+    # use default proc
+    ventoy_systemd_udevd_work_around
+
+    ventoy_add_udev_rule "$VTOY_PATH/hook/default/udev_disk_hook.sh %k"
 fi
-
-# use default proc
-ventoy_systemd_udevd_work_around
-
-ventoy_add_udev_rule "$VTOY_PATH/hook/default/udev_disk_hook.sh %k"

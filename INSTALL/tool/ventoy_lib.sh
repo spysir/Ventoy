@@ -2,6 +2,7 @@
 
 #Ventoy partition 32MB
 VENTOY_PART_SIZE=33554432
+VENTOY_PART_SIZE_MB=32
 VENTOY_SECTOR_SIZE=512
 VENTOY_SECTOR_NUM=65536
 
@@ -14,16 +15,6 @@ ventoy_true() {
 }
 
 ventoy_is_linux64() {
-    if [ -e /lib64 ]; then
-        ventoy_true
-        return
-    fi
-    
-    if [ -e /usr/lib64 ]; then
-        ventoy_true
-        return
-    fi
-    
     if uname -a | egrep -q 'x86_64|amd64'; then
         ventoy_true
         return
@@ -32,40 +23,17 @@ ventoy_is_linux64() {
     ventoy_false
 }
 
-ventoy_is_dash() {
-    if [ -L /bin/sh ]; then
-        vtdst=$(readlink /bin/sh)
-        if [ "$vtdst" = "dash" ]; then
-            ventoy_true
-            return
-        fi
-    fi 
-    ventoy_false
-}
-
 vtinfo() {
-    if ventoy_is_dash; then
-        echo "\033[32m$*\033[0m"
-    else
-        echo -e "\033[32m$*\033[0m"
-    fi
+    echo -e "\033[32m$*\033[0m"
 }
 
 vtwarn() {
-    if ventoy_is_dash; then
-        echo "\033[33m$*\033[0m"
-    else
-        echo -e "\033[33m$*\033[0m"
-    fi
+    echo -e "\033[33m$*\033[0m"
 }
 
 
 vterr() {
-    if ventoy_is_dash; then
-        echo "\033[31m$*\033[0m"
-    else
-        echo -e "\033[31m$*\033[0m"
-    fi
+    echo -e "\033[31m$*\033[0m"
 }
 
 vtdebug() {
@@ -135,7 +103,7 @@ get_ventoy_version_from_cfg() {
 }
 
 is_disk_contains_ventoy() {
-    DISK=$1
+    DISK=$1    
     
     PART1=$(get_disk_part_name $1 1)  
     PART2=$(get_disk_part_name $1 2)  
@@ -158,19 +126,23 @@ is_disk_contains_ventoy() {
         return
     fi
     
-    PART2_TYPE=$(dd if=$DISK bs=1 count=1 skip=466 status=none | ./tool/hexdump -n1 -e  '1/1 "%02X"')
-    if [ "$PART2_TYPE" != "EF" ]; then
-        vtdebug "part2 type is $PART2_TYPE not EF"
-        ventoy_false
-        return
-    fi
-    
     PART1_TYPE=$(dd if=$DISK bs=1 count=1 skip=450 status=none | ./tool/hexdump -n1 -e  '1/1 "%02X"')
-    if [ "$PART1_TYPE" != "07" ]; then
-        vtdebug "part1 type is $PART2_TYPE not 07"
-        ventoy_false
-        return
-    fi
+    PART2_TYPE=$(dd if=$DISK bs=1 count=1 skip=466 status=none | ./tool/hexdump -n1 -e  '1/1 "%02X"')
+    
+    # if [ "$PART1_TYPE" != "EE" ]; then
+        # if [ "$PART2_TYPE" != "EF" ]; then
+            # vtdebug "part2 type is $PART2_TYPE not EF"
+            # ventoy_false
+            # return
+        # fi
+    # fi
+    
+    # PART1_TYPE=$(dd if=$DISK bs=1 count=1 skip=450 status=none | ./tool/hexdump -n1 -e  '1/1 "%02X"')
+    # if [ "$PART1_TYPE" != "07" ]; then
+        # vtdebug "part1 type is $PART2_TYPE not 07"
+        # ventoy_false
+        # return
+    # fi
     
     if [ -e /sys/class/block/${PART1#/dev/}/start ]; then
         PART1_START=$(cat /sys/class/block/${PART1#/dev/}/start)
@@ -217,17 +189,32 @@ get_disk_ventoy_version() {
     ventoy_false
 }
 
-
-format_ventoy_disk() {
-    DISK=$1
+format_ventoy_disk_mbr() {
+    reserve_mb=$1
+    DISK=$2
+    PARTTOOL=$3
+    
+    PART1=$(get_disk_part_name $DISK 1)
     PART2=$(get_disk_part_name $DISK 2)
     
     sector_num=$(cat /sys/block/${DISK#/dev/}/size)
     
-    part1_start_sector=2048
-    part1_end_sector=$(expr $sector_num - $VENTOY_SECTOR_NUM - 1)
-    export part2_start_sector=$(expr $part1_end_sector + 1)
-    part2_end_sector=$(expr $sector_num - 1)
+    part1_start_sector=2048 
+    
+    if [ $reserve_mb -gt 0 ]; then
+        reserve_sector_num=$(expr $reserve_mb \* 2048)
+        part1_end_sector=$(expr $sector_num - $reserve_sector_num - $VENTOY_SECTOR_NUM - 1)
+    else
+        part1_end_sector=$(expr $sector_num - $VENTOY_SECTOR_NUM - 1)
+    fi
+    
+    part2_start_sector=$(expr $part1_end_sector + 1)
+    part2_end_sector=$(expr $part2_start_sector + $VENTOY_SECTOR_NUM - 1)
+
+    export part2_start_sector
+
+    vtdebug "part1_start_sector=$part1_start_sector  part1_end_sector=$part1_end_sector"
+    vtdebug "part2_start_sector=$part2_start_sector  part2_end_sector=$part2_end_sector"
 
     if [ -e $PART2 ]; then
         echo "delete $PART2"
@@ -235,9 +222,24 @@ format_ventoy_disk() {
     fi
 
     echo ""
-    echo "Create partitions on $DISK ..."
+    echo "Create partitions on $DISK by $PARTTOOL in MBR style ..."
     
-fdisk $DISK >/dev/null 2>&1 <<EOF
+    if [ "$PARTTOOL" = "parted" ]; then
+        vtdebug "format disk by parted ..."
+        parted -a none --script $DISK \
+            mklabel msdos \
+            unit s \
+            mkpart primary ntfs $part1_start_sector $part1_end_sector \
+            mkpart primary fat16 $part2_start_sector $part2_end_sector \
+            set 1 boot on \
+            quit
+
+        sync
+        echo -en '\xEF' | dd of=$DISK conv=fsync bs=1 count=1 seek=466 > /dev/null 2>&1
+    else
+    vtdebug "format disk by fdisk ..."
+    
+fdisk $DISK >>./log.txt 2>&1 <<EOF
 o
 n
 p
@@ -256,25 +258,42 @@ t
 2
 ef
 a
-2
+1
 w
 EOF
-    
-    echo "Done"
+    fi
+   
     udevadm trigger >/dev/null 2>&1
     partprobe >/dev/null 2>&1
     sleep 3
-
+    echo "Done"
 
     echo 'mkfs on disk partitions ...'
-    while ! [ -e $PART2 ]; do
-        echo "wait $PART2 ..."
-        sleep 1
+    for i in 1 2 3 4 5 6 7; do
+        if [ -b $PART2 ]; then
+            break
+        else
+            echo "wait $PART2 ..."
+            sleep 1
+        fi
     done
 
-    echo "create efi fat fs ..."
+
+    if ! [ -b $PART2 ]; then
+        MajorMinor=$(sed "s/:/ /" /sys/class/block/${PART2#/dev/}/dev)        
+        echo "mknod -m 0660 $PART2 b $MajorMinor ..."
+        mknod -m 0660 $PART2 b $MajorMinor
+        
+        if ! [ -b $PART1 ]; then
+            MajorMinor=$(sed "s/:/ /" /sys/class/block/${PART1#/dev/}/dev)        
+            echo "mknod -m 0660 $PART1 b $MajorMinor ..."
+            mknod -m 0660 $PART1 b $MajorMinor
+        fi
+    fi
+
+    echo "create efi fat fs $PART2 ..."
     for i in 0 1 2 3 4 5 6 7 8 9; do
-        if mkfs.vfat -F 16 -n EFI $PART2; then
+        if mkfs.vfat -F 16 -n VTOYEFI $PART2; then
             echo 'success'
             break
         else
@@ -283,6 +302,104 @@ EOF
         fi
     done
 }
+
+
+format_ventoy_disk_gpt() {
+    reserve_mb=$1
+    DISK=$2
+    PARTTOOL=$3
+    
+    PART1=$(get_disk_part_name $DISK 1)
+    PART2=$(get_disk_part_name $DISK 2)
+    
+    sector_num=$(cat /sys/block/${DISK#/dev/}/size)
+    
+    part1_start_sector=2048 
+    
+    if [ $reserve_mb -gt 0 ]; then
+        reserve_sector_num=$(expr $reserve_mb \* 2048 + 33)
+        part1_end_sector=$(expr $sector_num - $reserve_sector_num - $VENTOY_SECTOR_NUM - 1)
+    else
+        part1_end_sector=$(expr $sector_num - $VENTOY_SECTOR_NUM - 34)
+    fi
+    
+    part2_start_sector=$(expr $part1_end_sector + 1)
+    part2_end_sector=$(expr $part2_start_sector + $VENTOY_SECTOR_NUM - 1)
+
+    export part2_start_sector
+
+    vtdebug "part1_start_sector=$part1_start_sector  part1_end_sector=$part1_end_sector"
+    vtdebug "part2_start_sector=$part2_start_sector  part2_end_sector=$part2_end_sector"
+
+    if [ -e $PART2 ]; then
+        echo "delete $PART2"
+        rm -f $PART2
+    fi
+
+    echo ""
+    echo "Create partitions on $DISK by $PARTTOOL in GPT style ..."
+    
+    vtdebug "format disk by parted ..."
+    parted -a none --script $DISK \
+        mklabel gpt \
+        unit s \
+        mkpart Ventoy ntfs $part1_start_sector $part1_end_sector \
+        mkpart VTOYEFI fat16 $part2_start_sector $part2_end_sector \
+        set 2 msftdata on \
+        set 2 hidden on \
+        quit
+        
+    sync
+    
+    if ventoy_is_linux64; then
+        vtoygpt=./tool/vtoygpt_64
+    else
+        vtoygpt=./tool/vtoygpt_32
+    fi
+
+    $vtoygpt -f $DISK
+    sync
+
+    udevadm trigger >/dev/null 2>&1
+    partprobe >/dev/null 2>&1
+    sleep 3
+    echo "Done"
+
+    echo 'mkfs on disk partitions ...'
+    for i in 1 2 3 4 5 6 7; do
+        if [ -b $PART2 ]; then
+            break
+        else
+            echo "wait $PART2 ..."
+            sleep 1
+        fi
+    done
+
+
+    if ! [ -b $PART2 ]; then
+        MajorMinor=$(sed "s/:/ /" /sys/class/block/${PART2#/dev/}/dev)        
+        echo "mknod -m 0660 $PART2 b $MajorMinor ..."
+        mknod -m 0660 $PART2 b $MajorMinor
+        
+        if ! [ -b $PART1 ]; then
+            MajorMinor=$(sed "s/:/ /" /sys/class/block/${PART1#/dev/}/dev)        
+            echo "mknod -m 0660 $PART1 b $MajorMinor ..."
+            mknod -m 0660 $PART1 b $MajorMinor
+        fi
+    fi
+
+    echo "create efi fat fs $PART2 ..."
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+        if mkfs.vfat -F 16 -n VTOYEFI $PART2; then
+            echo 'success'
+            break
+        else
+            echo "$? retry ..."
+            sleep 2
+        fi
+    done
+}
+
 
 
 

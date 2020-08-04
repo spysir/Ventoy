@@ -87,6 +87,10 @@ ventoy_get_os_type() {
     elif $EGREP -q 'archlinux|ARCH' /proc/version; then
         echo 'arch'; return
     
+    # kiosk
+    elif $EGREP -q 'kiosk' /proc/version; then
+        echo 'kiosk'; return
+    
     # gentoo
     elif $EGREP -q '[Gg]entoo' /proc/version; then
         echo 'gentoo'; return
@@ -129,8 +133,9 @@ ventoy_get_os_type() {
         if $GREP -q 'XenServer' /etc/os-release; then
             echo 'xen'; return
         elif $GREP -q 'SUSE ' /etc/os-release; then
-            echo 'suse'; return
-       
+            echo 'suse'; return        
+        elif $GREP -q 'uruk' /etc/os-release; then
+            echo 'debian'; return
         fi
     fi
     
@@ -169,7 +174,56 @@ ventoy_get_os_type() {
         echo 'berry'; return
     fi
     
+    if $GREP -q 'Gobo ' /proc/version; then
+        echo 'gobo'; return
+    fi
     
+    if $GREP -q 'NuTyX' /proc/version; then
+        echo 'nutyx'; return
+    fi
+    
+    if [ -d /gnu ]; then
+        vtLineNum=$($FIND /gnu/ -name guix | $BUSYBOX_PATH/wc -l)
+        if [ $vtLineNum -gt 0 ]; then
+            echo 'guix'; return
+        fi
+    fi
+    
+    if $GREP -q 'android.x86' /proc/version; then
+        echo 'android'; return
+    fi 
+    
+    if $GREP -q 'adelielinux' /proc/version; then
+        echo 'adelie'; return
+    fi
+    
+    if $GREP -q 'pmagic' /proc/version; then
+        echo 'pmagic'; return
+    fi
+    
+    if $GREP -q 'CDlinux' /proc/cmdline; then
+        echo 'cdlinux'; return
+    fi
+    
+    if $GREP -q 'parabola' /proc/version; then
+        echo 'parabola'; return
+    fi
+    
+    if $GREP -q 'cucumber' /proc/version; then
+        echo 'cucumber'; return
+    fi
+    
+    if $GREP -q 'fatdog' /proc/version; then
+        echo 'fatdog'; return
+    fi
+    
+    if $GREP -q 'KWORT' /proc/version; then
+        echo 'kwort'; return
+    fi
+    
+    if $GREP -q 'iwamoto' /proc/version; then
+        echo 'vine'; return
+    fi
     
     echo "default"
 }
@@ -198,7 +252,6 @@ if [ "$VTOY_BREAK_LEVEL" = "03" ] || [ "$VTOY_BREAK_LEVEL" = "13" ]; then
 fi
 
 
-
 ####################################################################
 #                                                                  #
 # Step 4 : Hand over to real init                                  #
@@ -209,8 +262,14 @@ if [ "$rmproc" = "Y" ]; then
     $BUSYBOX_PATH/rm -rf /proc
 fi
 
+if [ -f $VTOY_PATH/ventoy_persistent_map ]; then
+    export PERSISTENT='YES'
+    export PERSISTENCE='true'
+fi
+
 cd /
-unset VTOY_PATH VTLOG FIND GREP EGREP CAT AWK SED SLEEP HEAD
+
+unset VTLOG FIND GREP EGREP CAT AWK SED SLEEP HEAD
 
 for vtinit in $user_rdinit /init /sbin/init /linuxrc; do
     if [ -d /ventoy_rdroot ]; then
@@ -221,6 +280,9 @@ for vtinit in $user_rdinit /init /sbin/init /linuxrc; do
         fi
     else
         if [ -e "$vtinit" ];then
+            if [ -f "$VTOY_PATH/hook/$VTOS/ventoy-before-init.sh" ]; then
+                $BUSYBOX_PATH/sh "$VTOY_PATH/hook/$VTOS/ventoy-before-init.sh"
+            fi
             exec "$vtinit"
         fi
     fi

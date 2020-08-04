@@ -29,6 +29,7 @@
 #include "fat_filelib.h"
 
 static ventoy_os_param g_os_param;
+static ventoy_windows_data g_windows_data;
 static UINT8 g_os_param_reserved[32];
 static BOOL g_64bit_system = FALSE;
 static ventoy_guid g_ventoy_guid = VENTOY_GUID;
@@ -491,13 +492,13 @@ static int VentoyFatDiskRead(uint32 Sector, uint8 *Buffer, uint32 SectorCount)
 
 static CHAR GetMountLogicalDrive(void)
 {
-	CHAR Letter = 'Z';
+	CHAR Letter = 'Y';
 	DWORD Drives;
-	DWORD Mask = 0x2000000;
+	DWORD Mask = 0x1000000;
 
 	Drives = GetLogicalDrives();
     Log("Drives=0x%x", Drives);
-
+    
 	while (Mask)
 	{
 		if ((Drives & Mask) == 0)
@@ -510,6 +511,55 @@ static CHAR GetMountLogicalDrive(void)
 	}
 
 	return Letter;
+}
+
+UINT64 GetVentoyEfiPartStartSector(HANDLE hDrive)
+{
+	BOOL bRet;
+	DWORD dwSize; 
+	MBR_HEAD MBR;	
+	VTOY_GPT_INFO *pGpt = NULL;
+	UINT64 StartSector = 0;
+
+	SetFilePointer(hDrive, 0, NULL, FILE_BEGIN);
+
+	bRet = ReadFile(hDrive, &MBR, sizeof(MBR), &dwSize, NULL);
+	Log("Read MBR Ret:%u Size:%u code:%u", bRet, dwSize, LASTERR);
+
+	if ((!bRet) || (dwSize != sizeof(MBR)))
+	{
+		0;
+	}
+
+	if (MBR.PartTbl[0].FsFlag == 0xEE)
+	{
+		Log("GPT partition style");
+
+		pGpt = malloc(sizeof(VTOY_GPT_INFO));
+		if (!pGpt)
+		{
+			return 0;
+		}
+
+		SetFilePointer(hDrive, 0, NULL, FILE_BEGIN);
+		bRet = ReadFile(hDrive, pGpt, sizeof(VTOY_GPT_INFO), &dwSize, NULL);		
+		if ((!bRet) || (dwSize != sizeof(VTOY_GPT_INFO)))
+		{
+			Log("Failed to read gpt info %d %u %d", bRet, dwSize, LASTERR);
+			return 0;
+		}
+
+		StartSector = pGpt->PartTbl[1].StartLBA;
+		free(pGpt);
+	}
+	else
+	{
+		Log("MBR partition style");
+		StartSector = MBR.PartTbl[1].StartSectorId;
+	}
+
+	Log("GetVentoyEfiPart StartSector: %llu", StartSector);
+	return StartSector;
 }
 
 int VentoyMountISOByImdisk(const char *IsoPath, DWORD PhyDrive)
@@ -542,7 +592,7 @@ int VentoyMountISOByImdisk(const char *IsoPath, DWORD PhyDrive)
 	}
 
 	g_FatPhyDrive = hDrive;
-	g_Part2StartSec = (LengthInfo.Length.QuadPart - VENTOY_EFI_PART_SIZE) / 512;
+	g_Part2StartSec = GetVentoyEfiPartStartSector(hDrive);
 
 	Log("Parse FAT fs...");
 
@@ -703,6 +753,184 @@ static int DeleteVentoyPart2MountPoint(DWORD PhyDrive)
     return 1;
 }
 
+static BOOL check_tar_archive(const char *archive, CHAR *tarName)
+{
+    int len;
+    int nameLen;
+    const char *pos = archive;
+    const char *slash = archive;
+
+    while (*pos)
+    {
+        if (*pos == '\\' || *pos == '/')
+        {
+            slash = pos;
+        }
+        pos++;
+    }
+
+    len = (int)strlen(slash);
+
+    if (len > 7 && (strncmp(slash + len - 7, ".tar.gz", 7) == 0 || strncmp(slash + len - 7, ".tar.xz", 7) == 0))
+    {
+        nameLen = (int)sprintf_s(tarName, MAX_PATH, "X:%s", slash);
+        tarName[nameLen - 3] = 0;
+        return TRUE;
+    }
+    else if (len > 8 && strncmp(slash + len - 8, ".tar.bz2", 8) == 0)
+    {
+        nameLen = (int)sprintf_s(tarName, MAX_PATH, "X:%s", slash);
+        tarName[nameLen - 4] = 0;
+        return TRUE;
+    }
+    else if (len > 9 && strncmp(slash + len - 9, ".tar.lzma", 9) == 0)
+    {
+        nameLen = (int)sprintf_s(tarName, MAX_PATH, "X:%s", slash);
+        tarName[nameLen - 5] = 0;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static int DecompressInjectionArchive(const char *archive, DWORD PhyDrive)
+{
+    int rc = 1;
+    BOOL bRet;
+    DWORD dwBytes;
+    HANDLE hDrive;
+    HANDLE hOut;
+    DWORD flags = CREATE_NO_WINDOW;
+    CHAR StrBuf[MAX_PATH];
+    CHAR tarName[MAX_PATH];
+    STARTUPINFOA Si;
+    PROCESS_INFORMATION Pi;
+    PROCESS_INFORMATION NewPi;
+    GET_LENGTH_INFORMATION LengthInfo;
+    SECURITY_ATTRIBUTES Sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+
+    Log("DecompressInjectionArchive %s", archive);
+
+    sprintf_s(StrBuf, sizeof(StrBuf), "\\\\.\\PhysicalDrive%d", PhyDrive);
+    hDrive = CreateFileA(StrBuf, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+    if (hDrive == INVALID_HANDLE_VALUE)
+    {
+        Log("Could not open the disk<%s>, error:%u", StrBuf, GetLastError());
+        goto End;
+    }
+
+    bRet = DeviceIoControl(hDrive, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0, &LengthInfo, sizeof(LengthInfo), &dwBytes, NULL);
+    if (!bRet)
+    {
+        Log("Could not get phy disk %s size, error:%u", StrBuf, GetLastError());
+        goto End;
+    }
+
+    g_FatPhyDrive = hDrive;
+	g_Part2StartSec = GetVentoyEfiPartStartSector(hDrive);
+
+    Log("Parse FAT fs...");
+
+    fl_init();
+
+    if (0 == fl_attach_media(VentoyFatDiskRead, NULL))
+    {
+        if (g_64bit_system)
+        {
+            CopyFileFromFatDisk("/ventoy/7z/64/7za.exe", "ventoy\\7za.exe");
+        }
+        else
+        {
+            CopyFileFromFatDisk("/ventoy/7z/32/7za.exe", "ventoy\\7za.exe");
+        }
+
+        sprintf_s(StrBuf, sizeof(StrBuf), "ventoy\\7za.exe x -y -aoa -oX:\\ %s", archive);
+
+        Log("extract inject to X:");
+        Log("cmdline:<%s>", StrBuf);
+
+        GetStartupInfoA(&Si);
+
+        hOut = CreateFileA("ventoy\\7z.log",
+            FILE_APPEND_DATA,
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            &Sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL);
+
+        Si.dwFlags |= STARTF_USESTDHANDLES;
+
+        if (hOut != INVALID_HANDLE_VALUE)
+        {
+            Si.hStdError = hOut;
+            Si.hStdOutput = hOut;
+        }
+
+        CreateProcessA(NULL, StrBuf, NULL, NULL, TRUE, flags, NULL, NULL, &Si, &Pi);
+        WaitForSingleObject(Pi.hProcess, INFINITE);
+
+        //
+        // decompress tar archive, for tar.gz/tar.xz/tar.bz2
+        //
+        if (check_tar_archive(archive, tarName))
+        {
+            Log("Decompress tar archive...<%s>", tarName);
+
+            sprintf_s(StrBuf, sizeof(StrBuf), "ventoy\\7za.exe x -y -aoa -oX:\\ %s", tarName);
+
+            CreateProcessA(NULL, StrBuf, NULL, NULL, TRUE, flags, NULL, NULL, &Si, &NewPi);
+            WaitForSingleObject(NewPi.hProcess, INFINITE);
+
+            Log("Now delete %s", tarName);
+            DeleteFileA(tarName);
+        }
+
+        SAFE_CLOSE_HANDLE(hOut);
+    }
+    fl_shutdown();
+
+End:
+
+    SAFE_CLOSE_HANDLE(hDrive);
+
+    return rc;
+}
+
+static int ProcessUnattendedInstallation(const char *script)
+{
+    DWORD dw;
+    HKEY hKey;
+    LSTATUS Ret;
+    CHAR Letter;
+    CHAR CurDir[MAX_PATH];
+
+    Log("Copy unattended XML ...");
+    
+    GetCurrentDirectory(sizeof(CurDir), CurDir);
+    Letter = CurDir[0];
+    if ((Letter >= 'A' && Letter <= 'Z') || (Letter >= 'a' && Letter <= 'z'))
+    {
+        Log("Current Drive Letter: %C", Letter);
+    }
+    else
+    {
+        Letter = 'X';
+    }
+    
+    sprintf_s(CurDir, sizeof(CurDir), "%C:\\Autounattend.xml", Letter);
+    Log("Copy file <%s> --> <%s>", script, CurDir);
+    CopyFile(script, CurDir, FALSE);
+
+    Ret = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "System\\Setup", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL, &hKey, &dw);
+    if (ERROR_SUCCESS == Ret)
+    {
+        Ret = RegSetValueEx(hKey, "UnattendFile", 0, REG_SZ, CurDir, (DWORD)(strlen(CurDir) + 1));
+    }
+
+    return 0;
+}
+
 static int VentoyHook(ventoy_os_param *param)
 {
     int rc;
@@ -755,6 +983,42 @@ static int VentoyHook(ventoy_os_param *param)
     // for protect
     rc = DeleteVentoyPart2MountPoint(DiskExtent.DiskNumber);
     Log("Delete ventoy mountpoint: %s", rc == 0 ? "SUCCESS" : "NO NEED");
+    
+    if (g_windows_data.auto_install_script[0])
+    {
+        sprintf_s(IsoPath, sizeof(IsoPath), "%C:%s", Letter, g_windows_data.auto_install_script);
+        if (IsPathExist(FALSE, "%s", IsoPath))
+        {
+            Log("use auto install script %s...", IsoPath);
+            ProcessUnattendedInstallation(IsoPath);
+        }
+        else
+        {
+            Log("auto install script %s not exist", IsoPath);
+        }
+    }
+    else
+    {
+        Log("auto install no need");
+    }
+
+    if (g_windows_data.injection_archive[0])
+    {
+        sprintf_s(IsoPath, sizeof(IsoPath), "%C:%s", Letter, g_windows_data.injection_archive);
+        if (IsPathExist(FALSE, "%s", IsoPath))
+        {
+            Log("decompress injection archive %s...", IsoPath);
+            DecompressInjectionArchive(IsoPath, DiskExtent.DiskNumber);
+        }
+        else
+        {
+            Log("injection archive %s not exist", IsoPath);
+        }
+    }
+    else
+    {
+        Log("no injection archive found");
+    }
 
     return 0;
 }
@@ -815,11 +1079,12 @@ int VentoyJump(INT argc, CHAR **argv, CHAR *LunchFile)
 	for (PeStart = 0; PeStart < FileSize; PeStart += 16)
 	{
 		if (CheckOsParam((ventoy_os_param *)(Buffer + PeStart)) && 
-			CheckPeHead(Buffer + PeStart + sizeof(ventoy_os_param)))
+            CheckPeHead(Buffer + PeStart + sizeof(ventoy_os_param) + sizeof(ventoy_windows_data)))
 		{
 			Log("Find os pararm at %u", PeStart);
 
             memcpy(&g_os_param, Buffer + PeStart, sizeof(ventoy_os_param));
+            memcpy(&g_windows_data, Buffer + PeStart + sizeof(ventoy_os_param), sizeof(ventoy_windows_data));            
             memcpy(g_os_param_reserved, g_os_param.vtoy_reserved, sizeof(g_os_param_reserved));
 
             if (g_os_param_reserved[0] == 1)
@@ -837,7 +1102,7 @@ int VentoyJump(INT argc, CHAR **argv, CHAR *LunchFile)
 				}
 			}
 
-			PeStart += sizeof(ventoy_os_param);
+			PeStart += sizeof(ventoy_os_param) + sizeof(ventoy_windows_data);
 			sprintf_s(LunchFile, MAX_PATH, "ventoy\\%s", GetFileNameInPath(ExeFileName));
 			SaveBuffer2File(LunchFile, Buffer + PeStart, FileSize - PeStart);
 			break;
