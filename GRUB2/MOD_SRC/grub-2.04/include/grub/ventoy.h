@@ -71,7 +71,7 @@ typedef struct ventoy_image_location
 {
     ventoy_guid  guid;
 
-    /* image sector size, currently this value is always 2048 */
+    /* image sector size, 2048/512 */
     grub_uint32_t   image_sector_size;
 
     /* disk sector size, normally the value is 512 */
@@ -125,7 +125,9 @@ typedef struct ventoy_os_param
      */
     grub_uint8_t   vtoy_reserved[32];    // Internal use by ventoy
 
-    grub_uint8_t   reserved[31];
+    grub_uint8_t   vtoy_disk_signature[4];
+
+    grub_uint8_t   reserved[27];
 }ventoy_os_param;
 
 
@@ -219,6 +221,7 @@ typedef struct ventoy_img_chunk_list
 #define GRUB_FILE_REPLACE_MAGIC  0x1258BEEF
 
 typedef const char * (*grub_env_get_pf)(const char *name);
+typedef int (*grub_env_set_pf)(const char *name, const char *val);
 typedef int (*grub_env_printf_pf)(const char *fmt, ...);
 
 typedef struct ventoy_grub_param_file_replace
@@ -232,6 +235,7 @@ typedef struct ventoy_grub_param_file_replace
 typedef struct ventoy_grub_param
 {
     grub_env_get_pf grub_env_get;
+    grub_env_set_pf grub_env_set;
     ventoy_grub_param_file_replace file_replace;
     grub_env_printf_pf grub_env_printf;
 }ventoy_grub_param;

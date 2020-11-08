@@ -33,12 +33,11 @@ if [ -e /init ] && $GREP -q '^mountroot$' /init; then
     fi
 elif [ -e "$CD_DETECT" ]; then
     echo "$CD_DETECT exist, now add hook in it..." >> $VTLOG
-
     $SED  "1 a $BUSYBOX_PATH/sh $VTOY_PATH/hook/debian/disk_mount_hook.sh"  -i "$CD_DETECT"
-    TITLE_LINE=$($GREP -m1 '^hw-detect.*detect_progress_title' "$CD_DETECT")
-    if [ $? -eq 0 ]; then
-        echo "add $TITLE_LINE for hook" >> $VTLOG
-        $SED  "1 a$TITLE_LINE"  -i "$CD_DETECT"
+    
+    if [ -e /bin/list-devices ]; then
+        mv /bin/list-devices /bin/list-devices-bk
+        cp -a /ventoy/hook/debian/list-devices /bin/list-devices
     fi
 elif [ -e /init ] && $GREP -q '/start-udev$' /init; then
     echo "Here use notify ..." >> $VTLOG
@@ -59,4 +58,19 @@ if [ -f $VTOY_PATH/autoinstall ]; then
         $SED "/^mount \/proc/a export file=$VTOY_PATH/autoinstall; export auto='true'; export priority='critical'"  -i /init
     fi
 fi
+
+#for ARMA aka Omoikane
+if [ -f /mod.img ] && [ -f /mod/fs/cramfs.ko ]; then
+    echo "mount mod.img and install dm-mod.ko" >> $VTLOG
+    $BUSYBOX_PATH/insmod /mod/fs/cramfs.ko
+    
+    $BUSYBOX_PATH/mkdir $VTOY_PATH/modmnt
+    $BUSYBOX_PATH/mount /mod.img $VTOY_PATH/modmnt
+    $BUSYBOX_PATH/insmod $VTOY_PATH/modmnt/md/dm-mod.ko
+    $BUSYBOX_PATH/umount $VTOY_PATH/modmnt
+    
+    $BUSYBOX_PATH/rmmod cramfs
+fi
+
+
 

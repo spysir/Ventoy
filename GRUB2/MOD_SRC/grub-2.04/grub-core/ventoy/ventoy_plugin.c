@@ -45,6 +45,9 @@ static persistence_config *g_persistence_head = NULL;
 static menu_alias *g_menu_alias_head = NULL;
 static menu_class *g_menu_class_head = NULL;
 static injection_config *g_injection_head = NULL;
+static auto_memdisk *g_auto_memdisk_head = NULL;
+static image_list *g_image_list_head = NULL;
+static conf_replace *g_conf_replace_head = NULL;
 
 static int ventoy_plugin_control_check(VTOY_JSON *json, const char *isodisk)
 {
@@ -67,7 +70,15 @@ static int ventoy_plugin_control_check(VTOY_JSON *json, const char *isodisk)
             pChild = pNode->pstChild;
             if (pChild->enDataType == JSON_TYPE_STRING)
             {
-                grub_printf("%s: %s\n", pChild->pcName, pChild->unData.pcStrVal);
+                if (grub_strcmp(pChild->pcName, "VTOY_DEFAULT_IMAGE") == 0)
+                {                    
+                    grub_printf("%s: %s [%s]\n", pChild->pcName, pChild->unData.pcStrVal,
+                        ventoy_check_file_exist("%s%s", isodisk, pChild->unData.pcStrVal) ? "OK" : "NOT EXIST");
+                }
+                else
+                {
+                    grub_printf("%s: %s\n", pChild->pcName, pChild->unData.pcStrVal);                    
+                }
             }
             else
             {
@@ -149,6 +160,12 @@ static int ventoy_plugin_theme_check(VTOY_JSON *json, const char *isodisk)
     if (value)
     {
         grub_printf("display_mode: %s\n", value);
+    }
+
+    value = vtoy_json_get_string_ex(json->pstChild, "serial_param");
+    if (value)
+    {
+        grub_printf("serial_param %s\n", value);
     }
 
     value = vtoy_json_get_string_ex(json->pstChild, "ventoy_left");
@@ -235,6 +252,13 @@ static int ventoy_plugin_theme_entry(VTOY_JSON *json, const char *isodisk)
     {
         debug("display_mode %s\n", value);
         grub_env_set("vtoy_display_mode", value);
+    }
+    
+    value = vtoy_json_get_string_ex(json->pstChild, "serial_param");
+    if (value)
+    {
+        debug("serial_param %s\n", value);
+        grub_env_set("vtoy_serial_param", value);
     }
 
     value = vtoy_json_get_string_ex(json->pstChild, "ventoy_left");
@@ -997,6 +1021,306 @@ static int ventoy_plugin_menuclass_check(VTOY_JSON *json, const char *isodisk)
     return 0;
 }
 
+static int ventoy_plugin_conf_replace_entry(VTOY_JSON *json, const char *isodisk)
+{
+    const char *isof = NULL;
+    const char *orgf = NULL;
+    const char *newf = NULL;
+    VTOY_JSON *pNode = NULL;
+    conf_replace *tail = NULL;
+    conf_replace *node = NULL;
+    conf_replace *next = NULL;
+
+    (void)isodisk;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        debug("Not array %d\n", json->enDataType);
+        return 0;
+    }
+
+    if (g_conf_replace_head)
+    {
+        for (node = g_conf_replace_head; node; node = next)
+        {
+            next = node->next;
+            grub_free(node);
+        }
+
+        g_conf_replace_head = NULL;
+    }
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        isof = vtoy_json_get_string_ex(pNode->pstChild, "iso");
+        orgf = vtoy_json_get_string_ex(pNode->pstChild, "org");
+        newf = vtoy_json_get_string_ex(pNode->pstChild, "new");
+        if (isof && orgf && newf && isof[0] == '/' && orgf[0] == '/' && newf[0] == '/')
+        {
+            node = grub_zalloc(sizeof(conf_replace));
+            if (node)
+            {
+                node->pathlen = grub_snprintf(node->isopath, sizeof(node->isopath), "%s", isof);
+                grub_snprintf(node->orgconf, sizeof(node->orgconf), "%s", orgf);
+                grub_snprintf(node->newconf, sizeof(node->newconf), "%s", newf);
+
+                if (g_conf_replace_head)
+                {
+                    tail->next = node;
+                }
+                else
+                {
+                    g_conf_replace_head = node;
+                }
+                tail = node;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int ventoy_plugin_conf_replace_check(VTOY_JSON *json, const char *isodisk)
+{
+    const char *isof = NULL;
+    const char *orgf = NULL;
+    const char *newf = NULL;
+    VTOY_JSON *pNode = NULL;
+    grub_file_t file = NULL;
+    char cmd[256];
+
+    (void)isodisk;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        grub_printf("Not array %d\n", json->enDataType);
+        return 1;
+    }
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        isof = vtoy_json_get_string_ex(pNode->pstChild, "iso");
+        orgf = vtoy_json_get_string_ex(pNode->pstChild, "org");
+        newf = vtoy_json_get_string_ex(pNode->pstChild, "new");
+        if (isof && orgf && newf && isof[0] == '/' && orgf[0] == '/' && newf[0] == '/')
+        {
+            if (ventoy_check_file_exist("%s%s", isodisk, isof))
+            {
+                grub_printf("iso:<%s> [OK]\n", isof);
+                
+                grub_snprintf(cmd, sizeof(cmd), "loopback vtisocheck %s%s", isodisk, isof);
+                grub_script_execute_sourcecode(cmd);
+
+                file = ventoy_grub_file_open(VENTOY_FILE_TYPE, "(vtisocheck)/%s", orgf);
+                if (file)
+                {
+                    if (grub_strcmp(file->fs->name, "iso9660") == 0)
+                    {
+                        grub_printf("org:<%s> [OK]\n", orgf);
+                    }
+                    else
+                    {
+                        grub_printf("org:<%s> [Exist But NOT ISO9660]\n", orgf);
+                    }
+                    grub_file_close(file);
+                }
+                else
+                {
+                    grub_printf("org:<%s> [NOT Exist]\n", orgf);
+                }
+                
+                grub_script_execute_sourcecode("loopback -d vtisocheck");
+            }
+            else
+            {
+                grub_printf("iso:<%s> [NOT Exist]\n", isof);
+                grub_printf("org:<%s>\n", orgf);
+            }
+
+            file = ventoy_grub_file_open(VENTOY_FILE_TYPE, "%s%s", isodisk, newf);
+            if (file)
+            {
+                if (file->size > vtoy_max_replace_file_size)
+                {
+                    grub_printf("new:<%s> [Too Big %lu] \n", newf, (ulong)file->size);
+                }
+                else
+                {
+                    grub_printf("new:<%s> [OK]\n", newf);                    
+                }
+                grub_file_close(file);
+            }
+            else
+            {
+                grub_printf("new:<%s> [NOT Exist]\n", newf);   
+            }
+            grub_printf("\n");
+        }
+    }
+
+    return 0;
+}
+
+static int ventoy_plugin_auto_memdisk_entry(VTOY_JSON *json, const char *isodisk)
+{
+    VTOY_JSON *pNode = NULL;
+    auto_memdisk *node = NULL;
+    auto_memdisk *next = NULL;
+
+    (void)isodisk;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        debug("Not array %d\n", json->enDataType);
+        return 0;
+    }
+
+    if (g_auto_memdisk_head)
+    {
+        for (node = g_auto_memdisk_head; node; node = next)
+        {
+            next = node->next;
+            grub_free(node);
+        }
+
+        g_auto_memdisk_head = NULL;
+    }
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        if (pNode->enDataType == JSON_TYPE_STRING)
+        {
+            node = grub_zalloc(sizeof(auto_memdisk));
+            if (node)
+            {
+                node->pathlen = grub_snprintf(node->isopath, sizeof(node->isopath), "%s", pNode->unData.pcStrVal);
+
+                if (g_auto_memdisk_head)
+                {
+                    node->next = g_auto_memdisk_head;
+                }
+                
+                g_auto_memdisk_head = node;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int ventoy_plugin_auto_memdisk_check(VTOY_JSON *json, const char *isodisk)
+{
+    VTOY_JSON *pNode = NULL;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        grub_printf("Not array %d\n", json->enDataType);
+        return 1;
+    }
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        if (pNode->enDataType == JSON_TYPE_STRING)
+        {
+            grub_printf("<%s> ", pNode->unData.pcStrVal);
+
+            if (ventoy_check_file_exist("%s%s", isodisk, pNode->unData.pcStrVal))
+            {
+                grub_printf(" [OK]\n");
+            }
+            else
+            {
+                grub_printf(" [NOT EXIST]\n");
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int ventoy_plugin_image_list_entry(VTOY_JSON *json, const char *isodisk)
+{
+    VTOY_JSON *pNode = NULL;
+    image_list *node = NULL;
+    image_list *next = NULL;
+    image_list *tail = NULL;
+
+    (void)isodisk;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        debug("Not array %d\n", json->enDataType);
+        return 0;
+    }
+
+    if (g_image_list_head)
+    {
+        for (node = g_image_list_head; node; node = next)
+        {
+            next = node->next;
+            grub_free(node);
+        }
+
+        g_image_list_head = NULL;
+    }
+
+    g_plugin_image_list = 1;
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        if (pNode->enDataType == JSON_TYPE_STRING)
+        {
+            node = grub_zalloc(sizeof(image_list));
+            if (node)
+            {
+                node->pathlen = grub_snprintf(node->isopath, sizeof(node->isopath), "%s", pNode->unData.pcStrVal);
+
+                if (g_image_list_head)
+                {
+                    tail->next = node;
+                }
+                else
+                {
+                    g_image_list_head = node;
+                }
+                tail = node;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int ventoy_plugin_image_list_check(VTOY_JSON *json, const char *isodisk)
+{
+    VTOY_JSON *pNode = NULL;
+
+    if (json->enDataType != JSON_TYPE_ARRAY)
+    {
+        grub_printf("Not array %d\n", json->enDataType);
+        return 1;
+    }
+
+    for (pNode = json->pstChild; pNode; pNode = pNode->pstNext)
+    {
+        if (pNode->enDataType == JSON_TYPE_STRING)
+        {
+            grub_printf("<%s> ", pNode->unData.pcStrVal);
+
+            if (ventoy_check_file_exist("%s%s", isodisk, pNode->unData.pcStrVal))
+            {
+                grub_printf(" [OK]\n");
+            }
+            else
+            {
+                grub_printf(" [NOT EXIST]\n");
+            }
+        }
+    }
+
+    return 0;
+}
+
 static plugin_entry g_plugin_entries[] = 
 {
     { "control", ventoy_plugin_control_entry, ventoy_plugin_control_check },
@@ -1006,11 +1330,15 @@ static plugin_entry g_plugin_entries[] =
     { "menu_alias", ventoy_plugin_menualias_entry, ventoy_plugin_menualias_check },
     { "menu_class", ventoy_plugin_menuclass_entry, ventoy_plugin_menuclass_check },
     { "injection", ventoy_plugin_injection_entry, ventoy_plugin_injection_check },
+    { "auto_memdisk", ventoy_plugin_auto_memdisk_entry, ventoy_plugin_auto_memdisk_check },
+    { "image_list", ventoy_plugin_image_list_entry, ventoy_plugin_image_list_check },
+    { "conf_replace", ventoy_plugin_conf_replace_entry, ventoy_plugin_conf_replace_check },
 };
 
 static int ventoy_parse_plugin_config(VTOY_JSON *json, const char *isodisk)
 {
     int i;
+    char key[128];
     VTOY_JSON *cur = json;
 
     grub_snprintf(g_iso_disk_name, sizeof(g_iso_disk_name), "%s", isodisk);
@@ -1019,7 +1347,8 @@ static int ventoy_parse_plugin_config(VTOY_JSON *json, const char *isodisk)
     {
         for (i = 0; i < (int)ARRAY_SIZE(g_plugin_entries); i++)
         {
-            if (grub_strcmp(g_plugin_entries[i].key, cur->pcName) == 0)
+            grub_snprintf(key, sizeof(key), "%s_%s", g_plugin_entries[i].key, VTOY_DUAL_MODE_SUFFIX);
+            if (grub_strcmp(g_plugin_entries[i].key, cur->pcName) == 0 || grub_strcmp(key, cur->pcName) == 0)
             {
                 debug("Plugin entry for %s\n", g_plugin_entries[i].key);
                 g_plugin_entries[i].entryfunc(cur, isodisk);
@@ -1050,7 +1379,7 @@ grub_err_t ventoy_cmd_load_plugin(grub_extcmd_context_t ctxt, int argc, char **a
     }
 
     debug("json configuration file size %d\n", (int)file->size);
-    
+
     buf = grub_malloc(file->size + 1);
     if (!buf)
     {
@@ -1073,6 +1402,9 @@ grub_err_t ventoy_cmd_load_plugin(grub_extcmd_context_t ctxt, int argc, char **a
     ret = vtoy_json_parse(json, buf);
     if (ret)
     {
+        grub_env_set("VTOY_PLUGIN_SYNTAX_ERROR", "1");
+        grub_env_export("VTOY_PLUGIN_SYNTAX_ERROR");
+        
         debug("Failed to parse json string %d\n", ret);
         grub_free(buf);
         return 1;
@@ -1150,9 +1482,15 @@ void ventoy_plugin_dump_persistence(void)
 
 install_template * ventoy_plugin_find_install_template(const char *isopath)
 {
+    int len;
     install_template *node = NULL;
-    int len = (int)grub_strlen(isopath);
-    
+
+    if (!g_install_template_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(isopath);
     for (node = g_install_template_head; node; node = node->next)
     {
         if (node->pathlen == len && grub_strcmp(node->isopath, isopath) == 0)
@@ -1184,9 +1522,15 @@ char * ventoy_plugin_get_cur_install_template(const char *isopath)
 
 persistence_config * ventoy_plugin_find_persistent(const char *isopath)
 {
+    int len;
     persistence_config *node = NULL;
-    int len = (int)grub_strlen(isopath);
-    
+
+    if (!g_persistence_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(isopath);
     for (node = g_persistence_head; node; node = node->next)
     {
         if ((len == node->pathlen) && (grub_strcmp(node->isopath, isopath) == 0))
@@ -1259,9 +1603,15 @@ end:
 
 const char * ventoy_plugin_get_injection(const char *isopath)
 {
+    int len;
     injection_config *node = NULL;
-    int len = (int)grub_strlen(isopath);
 
+    if (!g_injection_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(isopath);
     for (node = g_injection_head; node; node = node->next)
     {
         if (node->pathlen == len && grub_strcmp(node->isopath, isopath) == 0)
@@ -1275,9 +1625,15 @@ const char * ventoy_plugin_get_injection(const char *isopath)
 
 const char * ventoy_plugin_get_menu_alias(int type, const char *isopath)
 {
+    int len;
     menu_alias *node = NULL;
-    int len = (int)grub_strlen(isopath);
 
+    if (!g_menu_alias_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(isopath);
     for (node = g_menu_alias_head; node; node = node->next)
     {
         if (node->type == type && node->pathlen && 
@@ -1292,9 +1648,16 @@ const char * ventoy_plugin_get_menu_alias(int type, const char *isopath)
 
 const char * ventoy_plugin_get_menu_class(int type, const char *name)
 {
+    int len;
     menu_class *node = NULL;
-    int len = (int)grub_strlen(name);
 
+    if (!g_menu_class_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(name);
+    
     if (vtoy_class_image_file == type)
     {
         for (node = g_menu_class_head; node; node = node->next)
@@ -1319,11 +1682,91 @@ const char * ventoy_plugin_get_menu_class(int type, const char *name)
     return NULL;
 }
 
+int ventoy_plugin_check_memdisk(const char *isopath)
+{
+    int len;
+    auto_memdisk *node = NULL;
+
+    if (!g_auto_memdisk_head)
+    {
+        return 0;
+    }
+
+    len = (int)grub_strlen(isopath);    
+    for (node = g_auto_memdisk_head; node; node = node->next)
+    {
+        if (node->pathlen == len && grub_strncmp(isopath, node->isopath, len) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int ventoy_plugin_get_image_list_index(int type, const char *name)
+{
+    int len;
+    int index = 1;
+    image_list *node = NULL;
+
+    if (!g_image_list_head)
+    {
+        return 0;
+    }
+
+    len = (int)grub_strlen(name);    
+    
+    for (node = g_image_list_head; node; node = node->next, index++)
+    {
+        if (vtoy_class_directory == type)
+        {
+            if (len < node->pathlen && grub_strncmp(name, node->isopath, len) == 0)
+            {
+                return index;
+            }
+        }
+        else
+        {
+            if (len == node->pathlen && grub_strncmp(name, node->isopath, len) == 0)
+            {
+                return index;
+            }
+        }
+    }
+
+    return 0;
+}
+
+conf_replace * ventoy_plugin_find_conf_replace(const char *iso)
+{
+    int len;
+    conf_replace *node;
+
+    if (!g_conf_replace_head)
+    {
+        return NULL;
+    }
+
+    len = (int)grub_strlen(iso);
+    
+    for (node = g_conf_replace_head; node; node = node->next)
+    {
+        if (node->pathlen == len && grub_strncmp(iso, node->isopath, len) == 0)
+        {
+            return node;
+        }
+    }
+    
+    return NULL;
+}
+
 grub_err_t ventoy_cmd_plugin_check_json(grub_extcmd_context_t ctxt, int argc, char **args)
 {
     int i = 0;
     int ret = 0;
     char *buf = NULL;
+    char key[128];
     grub_file_t file;
     VTOY_JSON *node = NULL;
     VTOY_JSON *json = NULL;
@@ -1366,9 +1809,10 @@ grub_err_t ventoy_cmd_plugin_check_json(grub_extcmd_context_t ctxt, int argc, ch
         goto end;
     }
 
+    grub_snprintf(key, sizeof(key), "%s_%s", args[1], VTOY_DUAL_MODE_SUFFIX);
     for (node = json->pstChild; node; node = node->pstNext)
     {
-        if (grub_strcmp(node->pcName, args[1]) == 0)
+        if (grub_strcmp(node->pcName, args[1]) == 0 || grub_strcmp(node->pcName, key) == 0)
         {
             break;
         }
