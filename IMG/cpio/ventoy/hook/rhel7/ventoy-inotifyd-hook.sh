@@ -39,7 +39,13 @@ if is_inotify_ventoy_part $3; then
     fi
 
     vtlog "find ventoy partition ..."
-    $BUSYBOX_PATH/sh $VTOY_PATH/hook/default/udev_disk_hook.sh $3 noreplace
+    
+    vtReplaceOpt=noreplace
+    if [ -f /lib/dracut/hooks/pre-pivot/99-ventoy-repo.sh ]; then
+        vtReplaceOpt=""
+    fi
+    
+    $BUSYBOX_PATH/sh $VTOY_PATH/hook/default/udev_disk_hook.sh $3 $vtReplaceOpt
     
     blkdev_num=$($VTOY_PATH/tool/dmsetup ls | grep ventoy | sed 's/.*(\([0-9][0-9]*\),.*\([0-9][0-9]*\).*/\1:\2/')  
     vtDM=$(ventoy_find_dm_id ${blkdev_num})

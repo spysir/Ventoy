@@ -44,7 +44,38 @@ STATIC grub_env_printf_pf g_env_printf = NULL;
 STATIC VtoyUtilFeature gFeatureList[] = 
 {
     { L"fix_windows_mmap", FixWindowsMemhole },
+    { L"show_efi_drivers", ShowEfiDrivers    },
 };
+
+EFI_STATUS VtoyGetComponentName(IN UINTN Ver, IN VOID *Protocol, OUT CHAR16 **DriverName)
+{
+    EFI_STATUS Status = EFI_SUCCESS;
+    CHAR16 *DrvName = NULL;
+    EFI_COMPONENT_NAME_PROTOCOL *NameProtocol = NULL;
+    EFI_COMPONENT_NAME2_PROTOCOL *Name2Protocol = NULL;
+
+    if (1 == Ver)
+    {
+        NameProtocol = (EFI_COMPONENT_NAME_PROTOCOL *)Protocol;
+        Status = NameProtocol->GetDriverName(Protocol, "en", &DrvName);
+        if (EFI_ERROR(Status) || NULL == DrvName)
+        {
+            Status = NameProtocol->GetDriverName(Protocol, "eng", &DrvName);
+        }
+    }
+    else
+    {
+        Name2Protocol = (EFI_COMPONENT_NAME2_PROTOCOL *)Protocol;
+        Status = Name2Protocol->GetDriverName(Protocol, "en", &DrvName);
+        if (EFI_ERROR(Status) || NULL == DrvName)
+        {
+            Status = Name2Protocol->GetDriverName(Protocol, "eng", &DrvName);
+        }
+    }
+
+    *DriverName = DrvName;
+    return Status;
+}
 
 VOID EFIAPI VtoyUtilDebug(IN CONST CHAR8  *Format, ...)
 {
@@ -79,6 +110,14 @@ STATIC EFI_STATUS ParseCmdline(IN EFI_HANDLE ImageHandle)
     SetMem(pCmdLine, pImageInfo->LoadOptionsSize + 4, 0);
     CopyMem(pCmdLine, pImageInfo->LoadOptions, pImageInfo->LoadOptionsSize);
 
+    if (StrStr(pCmdLine, L"vtoyefitest"))
+    {
+        gST->ConOut->OutputString(gST->ConOut, L"\r\n##########################");
+        gST->ConOut->OutputString(gST->ConOut, L"\r\n#########  VTOY  #########");
+        gST->ConOut->OutputString(gST->ConOut, L"\r\n##########################");
+        return EFI_SUCCESS;
+    }
+    
     if (StrStr(pCmdLine, L"debug"))
     {
         gVtoyDebugPrint = TRUE;
@@ -100,8 +139,9 @@ STATIC EFI_STATUS ParseCmdline(IN EFI_HANDLE ImageHandle)
     }
 
     gCurFeature = pPos + StrLen(L"feature=");
-
+    
     gCmdLine = pCmdLine;
+    
     return EFI_SUCCESS;
 }
 
@@ -116,7 +156,7 @@ EFI_STATUS EFIAPI VtoyUtilEfiMain
     
     ParseCmdline(ImageHandle);
 
-    for (i = 0; i < ARRAY_SIZE(gFeatureList); i++)
+    for (i = 0; gCurFeature && i < ARRAY_SIZE(gFeatureList); i++)
     {
         Len = StrLen(gFeatureList[i].Cmd);
         if (StrnCmp(gFeatureList[i].Cmd, gCurFeature, Len) == 0)
@@ -127,8 +167,11 @@ EFI_STATUS EFIAPI VtoyUtilEfiMain
         }
     }
 
-    FreePool(gCmdLine);
-    gCmdLine = NULL;
+    if (gCmdLine)
+    {
+        FreePool(gCmdLine);
+        gCmdLine = NULL;        
+    }
 
     return EFI_SUCCESS;
 }

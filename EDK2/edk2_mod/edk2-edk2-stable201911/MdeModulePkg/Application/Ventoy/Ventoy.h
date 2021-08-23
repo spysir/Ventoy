@@ -168,24 +168,30 @@ typedef struct ventoy_virt_chunk
 #define VTOY_BLOCK_DEVICE_PATH_GUID					\
 	{ 0x37b87ac6, 0xc180, 0x4583, { 0xa7, 0x05, 0x41, 0x4d, 0xa8, 0xf7, 0x7e, 0xd2 }}
 
-#define ISO9660_EFI_DRIVER_PATH  L"\\ventoy\\iso9660_x64.efi"
 
-#define VTOY_BLOCK_DEVICE_PATH_NAME  L"ventoy"
 
 #if   defined (MDE_CPU_IA32)
   #define VENTOY_UEFI_DESC   L"IA32 UEFI"
+  #define ISO9660_EFI_DRIVER_PATH  L"\\ventoy\\iso9660_ia32.efi"
+  #define UDF_EFI_DRIVER_PATH  L"\\ventoy\\udf_ia32.efi"
 #elif defined (MDE_CPU_X64)
   #define VENTOY_UEFI_DESC   L"X64 UEFI"
+  #define ISO9660_EFI_DRIVER_PATH  L"\\ventoy\\iso9660_x64.efi"
+  #define UDF_EFI_DRIVER_PATH  L"\\ventoy\\udf_x64.efi"
 #elif defined (MDE_CPU_EBC)
 #elif defined (MDE_CPU_ARM)
   #define VENTOY_UEFI_DESC   L"ARM UEFI"
+  #define ISO9660_EFI_DRIVER_PATH  L"\\ventoy\\iso9660_arm.efi"
+  #define UDF_EFI_DRIVER_PATH  L"\\ventoy\\udf_arm.efi"
 #elif defined (MDE_CPU_AARCH64)
   #define VENTOY_UEFI_DESC   L"ARM64 UEFI"
+  #define ISO9660_EFI_DRIVER_PATH  L"\\ventoy\\iso9660_aa64.efi"
+  #define UDF_EFI_DRIVER_PATH  L"\\ventoy\\udf_aa64.efi"
 #else
   #error Unknown Processor Type
 #endif
 
-#define VENTOY_DEVICE_WARN 0
+#define VENTOY_DEVICE_WARN 1
 #define VTOY_WARNING  L"!!!!!!!!!!!!! WARNING !!!!!!!!!!!!!"
 
 typedef struct ventoy_sector_flag
@@ -337,11 +343,35 @@ typedef struct ventoy_system_wrapper
     EFI_LOCATE_DEVICE_PATH OriLocateDevicePath;
 } ventoy_system_wrapper;
 
+
+#define MAX_DRIVER_BIND_WRAPPER  64
+typedef struct DriverBindWrapper
+{
+    EFI_DRIVER_BINDING_PROTOCOL *DriverBinding;
+    EFI_DRIVER_BINDING_SUPPORTED pfOldSupport;
+}DRIVER_BIND_WRAPPER;
+
 #define ventoy_wrapper(bs, wrapper, func, newfunc) \
 {\
     wrapper.Ori##func = bs->func;\
     wrapper.New##func = newfunc;\
     bs->func = wrapper.New##func;\
+}
+
+
+#define VENTOY_GET_COMPONENT_NAME(Protocol, DriverName) \
+{\
+    DriverName = NULL;\
+    Status = Protocol->GetDriverName(Protocol, "en", &DriverName);\
+    if (EFI_ERROR(Status) || NULL == DriverName) \
+    {\
+        DriverName = NULL;\
+        Status = Protocol->GetDriverName(Protocol, "eng", &DriverName);\
+        if (EFI_ERROR(Status) || NULL == DriverName) \
+        {\
+            continue;\
+        }\
+    }\
 }
 
 extern BOOLEAN gDebugPrint;
@@ -389,6 +419,8 @@ EFI_STATUS ventoy_hook_keyboard_stop(VOID);
 BOOLEAN ventoy_is_cdrom_dp_exist(VOID);
 EFI_STATUS ventoy_hook_1st_cdrom_start(VOID);
 EFI_STATUS ventoy_hook_1st_cdrom_stop(VOID);
+EFI_STATUS ventoy_disable_ex_filesystem(VOID);
+EFI_STATUS ventoy_enable_ex_filesystem(VOID);
 
 #endif
 

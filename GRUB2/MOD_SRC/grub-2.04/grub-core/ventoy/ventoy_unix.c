@@ -33,6 +33,8 @@
 #include <grub/i18n.h>
 #include <grub/net.h>
 #include <grub/time.h>
+#include <grub/elf.h>
+#include <grub/elfload.h>
 #include <grub/ventoy.h>
 #include "ventoy_def.h"
 
@@ -235,6 +237,21 @@ static int ventoy_freebsd_append_conf(char *buf, const char *isopath)
     return pos;
 }
 
+static int ventoy_dragonfly_append_conf(char *buf, const char *isopath)
+{
+    int pos = 0;
+
+    debug("ventoy_dragonfly_append_conf %s\n", isopath);
+
+    vtoy_ssprintf(buf, pos, "tmpfs_load=\"%s\"\n", "YES");
+    vtoy_ssprintf(buf, pos, "dm_target_linear_load=\"%s\"\n", "YES");
+    vtoy_ssprintf(buf, pos, "initrd.img_load=\"%s\"\n", "YES");
+    vtoy_ssprintf(buf, pos, "initrd.img_type=\"%s\"\n", "md_image");
+    vtoy_ssprintf(buf, pos, "vfs.root.mountfrom=\"%s\"\n", "ufs:md0s0");
+
+    return pos;
+}
+
 grub_err_t ventoy_cmd_unix_reset(grub_extcmd_context_t ctxt, int argc, char **args)
 {
     (void)ctxt;
@@ -368,6 +385,174 @@ grub_err_t ventoy_cmd_unix_freebsd_ver(grub_extcmd_context_t ctxt, int argc, cha
     VENTOY_CMD_RETURN(GRUB_ERR_NONE);
 }
 
+grub_err_t ventoy_cmd_unix_freebsd_ver_elf(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    int j;
+    int k;
+    grub_elf_t elf = NULL;
+    grub_off_t offset = 0;
+    grub_uint32_t len = 0;
+    char *str = NULL;
+    char *data = NULL;
+    void *hdr = NULL;
+    char ver[64] = {0};
+    
+    (void)ctxt;
+    (void)argc;
+    (void)args;
+
+    if (argc != 3)
+    {
+        debug("Invalid argc %d\n", argc);
+        return 1;
+    }
+
+    data = grub_zalloc(8192);
+    if (!data)
+    {
+        goto out;
+    }
+
+    elf = grub_elf_open(args[0], GRUB_FILE_TYPE_LINUX_INITRD);
+    if (!elf)
+    {
+        debug("Failed to open file %s\n", args[0]);
+        goto out;
+    }
+
+    if (args[1][0] == '6')
+    {
+        Elf64_Ehdr *e = &(elf->ehdr.ehdr64);
+        Elf64_Shdr *h;
+        Elf64_Shdr *s;
+        Elf64_Shdr *t;
+        Elf64_Half i;
+        
+        h = hdr = grub_zalloc(e->e_shnum * e->e_shentsize);
+        if (!h)
+        {
+            goto out;
+        }
+
+        debug("read section header %u %u %u\n", e->e_shnum, e->e_shentsize, e->e_shstrndx);
+        grub_file_seek(elf->file, e->e_shoff);
+        grub_file_read(elf->file, h, e->e_shnum * e->e_shentsize);
+
+        s = (Elf64_Shdr *)((char *)h + e->e_shstrndx * e->e_shentsize);        
+        str = grub_malloc(s->sh_size + 1);
+        if (!str)
+        {
+            goto out;
+        }
+        str[s->sh_size] = 0;
+
+        debug("read string table %u %u\n", (grub_uint32_t)s->sh_offset, (grub_uint32_t)s->sh_size);
+        grub_file_seek(elf->file, s->sh_offset);
+        grub_file_read(elf->file, str, s->sh_size);
+
+        for (t = h, i = 0; i < e->e_shnum; i++)
+        {
+            if (grub_strcmp(str + t->sh_name, ".data") == 0)
+            {
+                offset = t->sh_offset;
+                len = t->sh_size;
+                debug("find .data section at %u %u\n", (grub_uint32_t)offset, len);
+                break;
+            }
+            t = (Elf64_Shdr *)((char *)t + e->e_shentsize);
+        }
+    }
+    else
+    {
+        Elf32_Ehdr *e = &(elf->ehdr.ehdr32);
+        Elf32_Shdr *h;
+        Elf32_Shdr *s;
+        Elf32_Shdr *t;
+        Elf32_Half i;
+        
+        h = hdr = grub_zalloc(e->e_shnum * e->e_shentsize);
+        if (!h)
+        {
+            goto out;
+        }
+
+        debug("read section header %u %u %u\n", e->e_shnum, e->e_shentsize, e->e_shstrndx);
+        grub_file_seek(elf->file, e->e_shoff);
+        grub_file_read(elf->file, h, e->e_shnum * e->e_shentsize);
+
+        s = (Elf32_Shdr *)((char *)h + e->e_shstrndx * e->e_shentsize);        
+        str = grub_malloc(s->sh_size + 1);
+        if (!str)
+        {
+            goto out;
+        }
+        str[s->sh_size] = 0;
+
+        debug("read string table %u %u\n", (grub_uint32_t)s->sh_offset, (grub_uint32_t)s->sh_size);
+        grub_file_seek(elf->file, s->sh_offset);
+        grub_file_read(elf->file, str, s->sh_size);
+
+        for (t = h, i = 0; i < e->e_shnum; i++)
+        {
+            if (grub_strcmp(str + t->sh_name, ".data") == 0)
+            {
+                offset = t->sh_offset;
+                len = t->sh_size;
+                debug("find .data section at %u %u\n", (grub_uint32_t)offset, len);
+                break;
+            }
+            t = (Elf32_Shdr *)((char *)t + e->e_shentsize);
+        }
+    }
+
+    if (offset == 0 || len == 0)
+    {
+        debug(".data section not found %s\n", args[0]);
+        goto out;
+    }
+
+    grub_file_seek(elf->file, offset + len - 8192);
+    grub_file_read(elf->file, data, 8192);
+
+    for (j = 0; j < 8192 - 12; j++)
+    {
+        if (grub_strncmp(data + j, "@(#)FreeBSD ", 12) == 0)
+        {
+            for (k = j + 12; k < 8192; k++)
+            {
+                if (0 == grub_isdigit(data[k]) && data[k] != '.')
+                {
+                    data[k] = 0;
+                    break;
+                }
+            }
+        
+            grub_snprintf(ver, sizeof(ver), "%s", data + j + 12);
+            break;
+        }
+    }
+
+    if (ver[0])
+    {
+        k = (int)grub_strtoul(ver, NULL, 10);
+        debug("freebsd version:<%s> <%d.x>\n", ver, k);
+        grub_snprintf(ver, sizeof(ver), "%d.x", k);
+        ventoy_set_env(args[2], ver);
+    }
+    else
+    {
+        debug("freebsd version:<%s>\n", "NOT FOUND");
+    }
+
+out:
+    grub_check_free(str);
+    grub_check_free(hdr);
+    grub_check_free(data);
+    check_free(elf, grub_elf_close);
+    
+    VENTOY_CMD_RETURN(GRUB_ERR_NONE);
+}
+
 grub_err_t ventoy_cmd_unix_replace_conf(grub_extcmd_context_t ctxt, int argc, char **args)
 {
     grub_uint32_t i;
@@ -431,6 +616,10 @@ grub_err_t ventoy_cmd_unix_replace_conf(grub_extcmd_context_t ctxt, int argc, ch
     {
         g_conf_new_len += ventoy_freebsd_append_conf(data + file->size, args[1]);
     }
+    else if (grub_strcmp(args[0], "DragonFly") == 0)
+    {
+        g_conf_new_len += ventoy_dragonfly_append_conf(data + file->size, args[1]);
+    }
     
     VENTOY_CMD_RETURN(GRUB_ERR_NONE);
 }
@@ -474,6 +663,7 @@ grub_err_t ventoy_cmd_unix_replace_ko(grub_extcmd_context_t ctxt, int argc, char
     data = grub_malloc(file->size);
     if (!data)
     {
+        debug("Failed to alloc memory for new ko %d\n", (int)file->size);
         grub_file_close(file);    
         return 1;
     }
@@ -484,6 +674,105 @@ grub_err_t ventoy_cmd_unix_replace_ko(grub_extcmd_context_t ctxt, int argc, char
     g_mod_new_data = data;
     g_mod_new_len = (int)file->size;
     
+    VENTOY_CMD_RETURN(GRUB_ERR_NONE);
+}
+
+grub_err_t ventoy_cmd_unix_fill_image_desc(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    int i;
+    grub_uint8_t *byte;
+    grub_uint32_t memsize;
+    ventoy_image_desc *desc;
+    grub_uint8_t flag[32] = {
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+    };
+
+    (void)ctxt;
+    (void)argc;
+    (void)args;
+
+    debug("ventoy_cmd_unix_fill_image_desc %p\n", g_mod_new_data);
+
+    if (!g_mod_new_data)
+    {
+        goto end;
+    }
+
+    byte = (grub_uint8_t *)g_mod_new_data;
+    for (i = 0; i < g_mod_new_len - 32; i += 16)
+    {
+        if (byte[i] == 0xFF && byte[i + 1] == 0xEE)
+        {
+            if (grub_memcmp(flag, byte + i, 32) == 0)
+            {
+                debug("Find position flag at %d(0x%x)\n", i, i);
+                break;                
+            }
+        }
+    }
+
+    if (i >= g_mod_new_len - 32)
+    {
+        debug("Failed to find position flag %d\n", i);
+        goto end;
+    }
+
+    desc = (ventoy_image_desc *)(byte + i);
+    desc->disk_size = g_ventoy_disk_size;
+    desc->part1_size = g_ventoy_disk_part_size[0];
+    grub_memcpy(desc->disk_uuid, g_ventoy_part_info->MBR.BootCode + 0x180, 16);
+    grub_memcpy(desc->disk_signature, g_ventoy_part_info->MBR.BootCode + 0x1B8, 4);
+
+    desc->img_chunk_count = g_img_chunk_list.cur_chunk;
+    memsize = g_img_chunk_list.cur_chunk * sizeof(ventoy_img_chunk);
+
+    debug("image chunk count:%u  memsize:%u\n", desc->img_chunk_count, memsize);
+
+    if (memsize >= VTOY_SIZE_1MB * 8)
+    {
+        grub_printf("image chunk count:%u  memsize:%u too big\n", desc->img_chunk_count, memsize);
+        goto end;
+    }
+
+    grub_memcpy(desc + 1, g_img_chunk_list.chunk, memsize);
+
+end:
+    VENTOY_CMD_RETURN(GRUB_ERR_NONE);
+}
+
+grub_err_t ventoy_cmd_unix_gzip_newko(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    int newlen;
+    grub_uint8_t *buf;
+
+    (void)ctxt;
+    (void)argc;
+    (void)args;
+
+    debug("ventoy_cmd_unix_gzip_newko %p\n", g_mod_new_data);
+
+    if (!g_mod_new_data)
+    {
+        goto end;
+    }
+
+    buf = grub_malloc(g_mod_new_len);
+    if (!buf)
+    {
+        goto end;
+    }
+
+    newlen = ventoy_gzip_compress(g_mod_new_data, g_mod_new_len, buf, g_mod_new_len);
+
+    grub_free(g_mod_new_data);
+
+    debug("gzip org len:%d  newlen:%d\n", g_mod_new_len, newlen);
+
+    g_mod_new_data = (char *)buf;
+    g_mod_new_len = newlen;
+
+end:
     VENTOY_CMD_RETURN(GRUB_ERR_NONE);
 }
 
