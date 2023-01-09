@@ -37,6 +37,7 @@
 #include <grub/gui_string_util.h>
 #include <grub/icon_manager.h>
 #include <grub/i18n.h>
+#include <grub/charset.h>
 
 static void
 init_terminal (grub_gfxmenu_view_t view);
@@ -142,6 +143,8 @@ grub_gfxmenu_view_destroy (grub_gfxmenu_view_t view)
   grub_free (view->title_text);
   grub_free (view->progress_message_text);
   grub_free (view->theme_path);
+  if (view->menu_title_offset)
+    grub_free (view->menu_title_offset);
   if (view->canvas)
     view->canvas->component.ops->destroy (view->canvas);
   grub_free (view);
@@ -386,20 +389,36 @@ redraw_menu_visit (grub_gui_component_t component,
     }
 }
 
+extern int g_menu_update_mode;
+
+static void grub_gfxmenu_update_all(grub_gfxmenu_view_t view)
+{
+    grub_video_set_area_status(GRUB_VIDEO_AREA_DISABLED);
+    grub_gfxmenu_view_redraw(view, &view->screen);
+}
+
 void
 grub_gfxmenu_redraw_menu (grub_gfxmenu_view_t view)
 {
   update_menu_components (view);
 
-  grub_gui_iterate_recursively ((grub_gui_component_t) view->canvas,
-                                redraw_menu_visit, view);
+  if (g_menu_update_mode)
+    grub_gfxmenu_update_all(view);
+  else
+    grub_gui_iterate_recursively ((grub_gui_component_t) view->canvas,
+                                  redraw_menu_visit, view);
+  
   grub_video_swap_buffers ();
   if (view->double_repaint)
     {
-      grub_gui_iterate_recursively ((grub_gui_component_t) view->canvas,
-				    redraw_menu_visit, view);
+      if (g_menu_update_mode)
+        grub_gfxmenu_update_all(view);
+      else
+        grub_gui_iterate_recursively ((grub_gui_component_t) view->canvas,
+                                      redraw_menu_visit, view);
     }
 }
+
 
 void 
 grub_gfxmenu_set_chosen_entry (int entry, void *data)
@@ -407,6 +426,34 @@ grub_gfxmenu_set_chosen_entry (int entry, void *data)
   grub_gfxmenu_view_t view = data;
 
   view->selected = entry;
+  grub_gfxmenu_redraw_menu (view);
+
+  
+}
+
+void
+grub_gfxmenu_scroll_chosen_entry (void *data, int diren)
+{
+  grub_gfxmenu_view_t view = data;
+  const char *item_title;
+  int off;
+  int max;
+
+  if (!view->menu->size)
+    return;
+
+  item_title = grub_menu_get_entry (view->menu, view->selected)->title;
+  off = view->menu_title_offset[view->selected] + diren;
+  max = grub_utf8_get_num_code (item_title, grub_strlen(item_title));
+
+  if (diren == 1000000)
+    off = (max >= 20) ? (max - 20) : 0;
+  else if (off < 0)
+    off = 0;
+  else if (off > max)
+    off = max;
+
+  view->menu_title_offset[view->selected] = off;
   grub_gfxmenu_redraw_menu (view);
 }
 

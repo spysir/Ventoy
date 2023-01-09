@@ -75,6 +75,10 @@ ventoy_get_os_type() {
         echo 'openwrt'; return
     fi
     
+    if $GREP -q 'easyos' /proc/cmdline; then
+        echo 'easyos'; return
+    fi
+    
     if [ -e /BOOT_SPECS ]; then
         if $GREP -q 'easyos' /BOOT_SPECS; then
             echo 'easyos'; return
@@ -127,8 +131,8 @@ ventoy_get_os_type() {
         
     # Deepin : do the same process with debian
     elif $GREP -q '[Dd]eepin' /proc/version; then
-        echo 'debian'; return
-        
+        echo 'debian'; return    
+
     # SUSE
     elif $GREP -q 'SUSE' /proc/version; then
         echo 'suse'; return
@@ -200,6 +204,10 @@ ventoy_get_os_type() {
             echo 'openEuler'; return
         elif $GREP -q 'fuyu' /etc/os-release; then
             echo 'openEuler'; return
+        elif $GREP -q 'deepin' /etc/os-release; then
+            echo 'debian'; return
+        elif $GREP -q 'chinauos' /etc/os-release; then
+            echo 'debian'; return
         fi
     fi
     

@@ -52,8 +52,24 @@ ventoy_get_os_type() {
         fi
     fi
 
+    # PrimeOS :
+    if $GREP -q 'PrimeOS' /proc/version; then
+        echo 'primeos'; return
+
+    # Debian :
+    elif $GREP -q '[Dd]ebian' /proc/version; then
+        echo 'debian'; return
+
+    # Ubuntu : do the same process with debian
+    elif $GREP -q '[Uu]buntu' /proc/version; then
+        echo 'debian'; return
+        
+    # Deepin : do the same process with debian
+    elif $GREP -q '[Dd]eepin' /proc/version; then
+        echo 'debian'; return
+
     # rhel5/CentOS5 and all other distributions based on them
-    if $GREP -q 'el5' /proc/version; then
+    elif $GREP -q 'el5' /proc/version; then
         echo 'rhel5'; return
 
     # rhel6/CentOS6 and all other distributions based on them
@@ -77,19 +93,10 @@ ventoy_get_os_type() {
     # Fedora : do the same process with rhel7
     elif $GREP -q '\.fc[0-9][0-9]\.' /proc/version; then
         echo 'rhel7'; return
-        
-    # Debian :
-    elif $GREP -q '[Dd]ebian' /proc/version; then
-        echo 'debian'; return
-        
-    # Ubuntu : do the same process with debian
-    elif $GREP -q '[Uu]buntu' /proc/version; then
-        echo 'debian'; return
-        
-    # Deepin : do the same process with debian
-    elif $GREP -q '[Dd]eepin' /proc/version; then
-        echo 'debian'; return
-        
+
+    elif $GREP -q 'euleros' /proc/version; then
+        echo 'rhel7'; return
+
     # SUSE
     elif $GREP -q 'SUSE' /proc/version; then
         echo 'suse'; return
@@ -160,7 +167,11 @@ ventoy_get_os_type() {
         elif $GREP -q 'openEuler' /etc/os-release; then
             echo 'openEuler'; return
         elif $GREP -q 'fuyu' /etc/os-release; then
-            echo 'openEuler'; return	
+            echo 'openEuler'; return
+        elif $GREP -q 'deepin' /etc/os-release; then
+            echo 'debian'; return
+        elif $GREP -q 'chinauos' /etc/os-release; then
+            echo 'debian'; return
         fi
     fi
     
@@ -334,6 +345,31 @@ ventoy_get_os_type() {
         echo "openEuler"; return
     fi
     
+    
+    #special arch based iso file check
+    if [ -f /init ]; then
+        if $GREP -q 'mount_handler' /init; then
+            if [ -d /hooks ]; then
+                if $BUSYBOX_PATH/ls -1 /hooks/ | $GREP -q '.*iso$'; then
+                    echo "arch"; return
+                fi
+            elif [ -d /hook ]; then
+                if $BUSYBOX_PATH/ls -1 /hook/ | $GREP -q '.*iso$'; then
+                    echo "arch"; return
+                fi
+            fi
+        fi
+    fi
+    
+    
+    #Kylin V10 Server
+    if [ -f /usr/sbin/dhclient ]; then
+        if $BUSYBOX_PATH/strings /usr/sbin/dhclient | $GREP -i -q -m1 openeuler; then
+            echo 'openEuler'; return
+        fi
+    fi
+    
+    
     echo "default"
 }
 
@@ -344,9 +380,36 @@ if [ -e "$VTOY_PATH/hook/$VTOS/ventoy-hook.sh" ]; then
 fi
 
 
+
+if $GREP -q -i Untangle /proc/version; then
+    for vtPara in $($CAT /proc/cmdline); do
+        vtItemkey=$(echo $vtPara | $AWK -F= '{print $1}')
+        vtItemVal=$(echo $vtPara | $AWK -F= '{print $2}')
+        if $GREP -q -m1 "^$vtItemkey\$" $VTOY_PATH/hook/default/export.list; then
+            vtEnvExport="$vtEnvExport $vtItemkey=$vtItemVal"
+        fi
+    done
+    
+    echo "================ env export ================" >> $VTLOG
+    echo $vtEnvExport >> $VTLOG
+    echo "============================================" >> $VTLOG
+fi
+
+
+
 ####################################################################
 #                                                                  #
-# Step 3 : Check for debug break                                   #
+# Step 3 : Run LiveInjection Hook                                  #
+#                                                                  #
+####################################################################
+if [ -f "/live_injection_7ed136ec_7a61_4b54_adc3_ae494d5106ea/hook.sh" ]; then
+    $BUSYBOX_PATH/sh "/live_injection_7ed136ec_7a61_4b54_adc3_ae494d5106ea/hook.sh" $VTOS
+fi
+
+
+####################################################################
+#                                                                  #
+# Step 4 : Check for debug break                                   #
 #                                                                  #
 ####################################################################
 if [ "$VTOY_BREAK_LEVEL" = "03" ] || [ "$VTOY_BREAK_LEVEL" = "13" ]; then
@@ -363,7 +426,7 @@ fi
 
 ####################################################################
 #                                                                  #
-# Step 4 : Hand over to real init                                  #
+# Step 5 : Hand over to real init                                  #
 #                                                                  #
 ####################################################################
 $BUSYBOX_PATH/umount /proc
@@ -392,7 +455,12 @@ for vtinit in $user_rdinit /init /sbin/init /linuxrc; do
             if [ -f "$VTOY_PATH/hook/$VTOS/ventoy-before-init.sh" ]; then
                 $BUSYBOX_PATH/sh "$VTOY_PATH/hook/$VTOS/ventoy-before-init.sh"
             fi
-            exec "$vtinit"
+            
+            if [ -z "$vtEnvExport" ]; then
+                exec "$vtinit"
+            else
+                exec env $vtEnvExport "$vtinit"
+            fi            
         fi
     fi
 done

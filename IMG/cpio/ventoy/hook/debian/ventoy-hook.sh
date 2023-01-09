@@ -35,7 +35,7 @@ ventoy_get_debian_distro() {
     fi
     
     if [ -e /init ]; then
-        if $GREP -q PUPPYSFS /init; then
+        if $EGREP -q 'PUPPYSFS|PUPPYFILE' /init; then
             if $GREP -q VEKETSFS /init; then
                 echo 'veket'; return
             else
@@ -43,6 +43,8 @@ ventoy_get_debian_distro() {
             fi
         elif $GREP -m1 -q 'Minimal.*Linux.*Live' /init; then
             echo 'mll'; return
+        elif $GREP -m1 -q 'stratodesk.com' /init; then
+            echo 'stratodesk'; return
         fi
     fi
 
@@ -54,6 +56,10 @@ ventoy_get_debian_distro() {
 
     if $GREP -q 'slax/' /proc/cmdline; then
         echo 'slax'; return
+    fi
+    
+    if $GREP -q 'minios/' /proc/cmdline; then
+        echo 'minios'; return
     fi
     
     if $GREP -q 'PVE ' /proc/version; then
@@ -92,6 +98,10 @@ ventoy_get_debian_distro() {
     
     if $GREP -q 'mocaccino' /proc/version; then
         echo 'mocaccino'; return
+    fi
+    
+    if $GREP -q '/pyabr/' /proc/cmdline; then
+        echo 'pyabr'; return
     fi
     
     echo 'default'
